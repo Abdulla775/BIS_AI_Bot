@@ -2,15 +2,14 @@ import os
 import hmac
 import hashlib
 import requests
-import google.generativeai as genai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
-PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
-VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "bis_school_2024")
-APP_SECRET        = os.environ.get("APP_SECRET", "")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+PAGE_ACCESS_TOKEN  = os.environ.get("PAGE_ACCESS_TOKEN", "")
+VERIFY_TOKEN       = os.environ.get("VERIFY_TOKEN", "bis_school_2024")
+APP_SECRET         = os.environ.get("APP_SECRET", "")
 
 def load_school_data():
     try:
@@ -21,7 +20,6 @@ def load_school_data():
         return ""
 
 SCHOOL_DATA = load_school_data()
-genai.configure(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = f"""أنت مساعد ذكي للمدرسة البريطانية الدولية في غزة (BIS Palestine).
 مهمتك الرد على استفسارات أولياء الأمور والطلاب عبر فيسبوك ماسنجر بشكل ودي ومحترف.
@@ -38,14 +36,49 @@ conversations = {}
 def get_ai_response(sender_id, user_message):
     try:
         if sender_id not in conversations:
-            conversations[sender_id] = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
-                system_instruction=SYSTEM_PROMPT
-            ).start_chat(history=[])
-        return conversations[sender_id].send_message(user_message).text
+            conversations[sender_id] = []
+
+        conversations[sender_id].append({
+            "role": "user",
+            "content": user_message
+        })
+
+        if len(conversations[sender_id]) > 20:
+            conversations[sender_id] = conversations[sender_id][-20:]
+
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://bis-ai-bot.onrender.com",
+                "X-Title": "BIS School Bot"
+            },
+            json={
+                "model": "google/gemini-2.0-flash-001",
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT}
+                ] + conversations[sender_id],
+                "max_tokens": 500,
+                "temperature": 0.7
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            reply = response.json()["choices"][0]["message"]["content"]
+            conversations[sender_id].append({
+                "role": "assistant",
+                "content": reply
+            })
+            return reply
+        else:
+            print(f"[ERROR] OpenRouter {response.status_code}: {response.text}")
+            return "عذراً، حدث خطأ مؤقت. يرجى التواصل على: 00970593115112"
+
     except Exception as e:
-        print(f"[ERROR] Gemini: {e}")
-        return "عذراً، حدث خطأ. يرجى التواصل على: 00970593115112"
+        print(f"[ERROR] get_ai_response: {e}")
+        return "عذراً، حدث خطأ مؤقت. يرجى التواصل على: 00970593115112"
 
 FB_API = "https://graph.facebook.com/v19.0/me/messages"
 
@@ -55,9 +88,11 @@ def send_message(recipient_id, text):
         try:
             requests.post(FB_API,
                 params={"access_token": PAGE_ACCESS_TOKEN},
-                json={"recipient": {"id": recipient_id},
-                      "message": {"text": chunk},
-                      "messaging_type": "RESPONSE"},
+                json={
+                    "recipient": {"id": recipient_id},
+                    "message": {"text": chunk},
+                    "messaging_type": "RESPONSE"
+                },
                 timeout=10)
         except Exception as e:
             print(f"[ERROR] send: {e}")
@@ -68,7 +103,8 @@ def send_typing(recipient_id):
             params={"access_token": PAGE_ACCESS_TOKEN},
             json={"recipient": {"id": recipient_id}, "sender_action": "typing_on"},
             timeout=5)
-    except: pass
+    except:
+        pass
 
 @app.route("/webhook", methods=["GET"])
 def webhook_verify():
@@ -90,13 +126,16 @@ def webhook_receive():
             sender_id = event["sender"]["id"]
             if "message" in event:
                 msg = event["message"]
-                if msg.get("is_echo"): continue
+                if msg.get("is_echo"):
+                    continue
                 text = msg.get("text", "").strip()
-                if not text: continue
+                if not text:
+                    continue
                 print(f"[IN] {sender_id}: {text}")
                 send_typing(sender_id)
                 reply = get_ai_response(sender_id, text)
                 send_message(sender_id, reply)
+                print(f"[OUT] {reply[:80]}")
             elif "postback" in event:
                 payload = event["postback"].get("payload", "مرحبا")
                 send_typing(sender_id)
@@ -108,7 +147,7 @@ def home():
     return jsonify({
         "status": "BIS School Bot is running",
         "school_data": "loaded" if SCHOOL_DATA else "MISSING",
-        "gemini": "ok" if GEMINI_API_KEY else "missing",
+        "ai": "OpenRouter / Gemini 2.0 Flash",
         "messenger": "ok" if PAGE_ACCESS_TOKEN else "not set yet"
     })
 

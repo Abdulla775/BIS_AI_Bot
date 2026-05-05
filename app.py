@@ -1,6 +1,4 @@
 import os
-import hmac
-import hashlib
 import requests
 from flask import Flask, request, jsonify
 
@@ -9,7 +7,6 @@ app = Flask(__name__)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PAGE_ACCESS_TOKEN  = os.environ.get("PAGE_ACCESS_TOKEN", "")
 VERIFY_TOKEN       = os.environ.get("VERIFY_TOKEN", "bis_school_2024")
-APP_SECRET         = os.environ.get("APP_SECRET", "")
 
 def load_school_data():
     try:
@@ -21,15 +18,38 @@ def load_school_data():
 
 SCHOOL_DATA = load_school_data()
 
-SYSTEM_PROMPT = f"""أنت مساعد ذكي للمدرسة البريطانية الدولية في غزة (BIS Palestine).
-مهمتك الرد على استفسارات أولياء الأمور والطلاب عبر فيسبوك ماسنجر بشكل ودي ومحترف.
-قواعد مهمة:
-1. استخدم فقط المعلومات في بيانات المدرسة أدناه
-2. إذا لم تجد إجابة: "يرجى التواصل مع الإدارة: 00970593115112"
-3. ردودك دائماً بالعربية — مختصرة (3-4 أسطر)
-4. عند السؤال عن التسجيل: واتساب الإدارة 00970593115112
+SYSTEM_PROMPT = f"""أنت مساعد ذكي ودود للمدرسة البريطانية الدولية في فلسطين (BIS Palestine).
+مهمتك الرد على استفسارات أولياء الأمور والطلاب عبر فيسبوك ماسنجر بأسلوب احترافي وودود.
+
+📌 قواعد الرد:
+1. استخدم فقط المعلومات الموجودة في بيانات المدرسة أدناه
+2. إذا لم تجد إجابة، قل: "يرجى التواصل مع الإدارة على واتساب: 00970593115112"
+3. ردودك دائماً بالعربية الفصحى السهلة
+4. نسّق ردودك بشكل جميل ومرتب كالتالي:
+   - ابدأ بتحية مختصرة ودافئة مثل "أهلاً وسهلاً! 😊"
+   - استخدم الرموز التعبيرية المناسبة لكل موضوع (📚 للمناهج، 💰 للرسوم، 📝 للتسجيل، 📞 للتواصل، ✅ للشروط)
+   - استخدم نقاط واضحة (•) لتعداد المعلومات
+   - افصل بين الأفكار بسطر فارغ
+   - اختم بعرض المساعدة: "هل تحتاج لمزيد من المعلومات؟ 😊"
+5. الرد يجب أن يكون شاملاً ومفيداً لكن غير مطوّل جداً (5-8 أسطر مثالية)
+6. عند السؤال عن التسجيل: أذكر واتساب الإدارة 00970593115112
+
 بيانات المدرسة:
 {SCHOOL_DATA}"""
+
+# Welcome message sent when user first starts chatting
+WELCOME_MESSAGE = """🏫 أهلاً وسهلاً بكم في المدرسة البريطانية الدولية!
+
+أنا مساعدكم الذكي، يسعدني مساعدتكم في الاستفسار عن:
+
+📝 القبول والتسجيل
+💰 الرسوم الدراسية
+📚 المناهج والبرامج
+⏰ المواعيد والدوام
+📞 التواصل مع الإدارة
+🎯 الأنشطة والفعاليات
+
+كيف يمكنني مساعدتكم اليوم؟ 😊"""
 
 conversations = {}
 
@@ -43,6 +63,7 @@ def get_ai_response(sender_id, user_message):
             "content": user_message
         })
 
+        # Keep last 20 messages to avoid token overflow
         if len(conversations[sender_id]) > 20:
             conversations[sender_id] = conversations[sender_id][-20:]
 
@@ -59,8 +80,8 @@ def get_ai_response(sender_id, user_message):
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT}
                 ] + conversations[sender_id],
-                "max_tokens": 500,
-                "temperature": 0.7
+                "max_tokens": 600,
+                "temperature": 0.6
             },
             timeout=30
         )
@@ -74,37 +95,96 @@ def get_ai_response(sender_id, user_message):
             return reply
         else:
             print(f"[ERROR] OpenRouter {response.status_code}: {response.text}")
-            return "عذراً، حدث خطأ مؤقت. يرجى التواصل على: 00970593115112"
+            return "⚠️ عذراً، حدث خطأ مؤقت.\nيرجى التواصل معنا مباشرة على واتساب: 00970593115112"
 
     except Exception as e:
         print(f"[ERROR] get_ai_response: {e}")
-        return "عذراً، حدث خطأ مؤقت. يرجى التواصل على: 00970593115112"
+        return "⚠️ عذراً، حدث خطأ مؤقت.\nيرجى التواصل معنا مباشرة على واتساب: 00970593115112"
 
 FB_API = "https://graph.facebook.com/v19.0/me/messages"
 
 def send_message(recipient_id, text):
+    """Send message, splitting if over 2000 chars"""
     chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
     for chunk in chunks:
         try:
-            requests.post(FB_API,
+            requests.post(
+                FB_API,
                 params={"access_token": PAGE_ACCESS_TOKEN},
                 json={
                     "recipient": {"id": recipient_id},
                     "message": {"text": chunk},
                     "messaging_type": "RESPONSE"
                 },
-                timeout=10)
+                timeout=10
+            )
         except Exception as e:
-            print(f"[ERROR] send: {e}")
+            print(f"[ERROR] send_message: {e}")
 
 def send_typing(recipient_id):
+    """Show typing indicator"""
     try:
-        requests.post(FB_API,
+        requests.post(
+            FB_API,
             params={"access_token": PAGE_ACCESS_TOKEN},
             json={"recipient": {"id": recipient_id}, "sender_action": "typing_on"},
-            timeout=5)
+            timeout=5
+        )
     except:
         pass
+
+def set_get_started():
+    """Set up the Get Started button"""
+    try:
+        requests.post(
+            "https://graph.facebook.com/v19.0/me/messenger_profile",
+            params={"access_token": PAGE_ACCESS_TOKEN},
+            json={
+                "get_started": {"payload": "GET_STARTED"},
+                "greeting": [
+                    {
+                        "locale": "default",
+                        "text": "🏫 مرحباً بك في المدرسة البريطانية الدولية! اضغط 'ابدأ' للحصول على المساعدة."
+                    },
+                    {
+                        "locale": "ar_AR",
+                        "text": "🏫 مرحباً بك في المدرسة البريطانية الدولية! اضغط 'ابدأ' للحصول على المساعدة."
+                    }
+                ],
+                "persistent_menu": [
+                    {
+                        "locale": "default",
+                        "composer_input_disabled": False,
+                        "call_to_actions": [
+                            {
+                                "type": "postback",
+                                "title": "📝 التسجيل والقبول",
+                                "payload": "REGISTRATION_INFO"
+                            },
+                            {
+                                "type": "postback",
+                                "title": "💰 الرسوم الدراسية",
+                                "payload": "FEES_INFO"
+                            },
+                            {
+                                "type": "postback",
+                                "title": "📚 المناهج والبرامج",
+                                "payload": "CURRICULUM_INFO"
+                            },
+                            {
+                                "type": "postback",
+                                "title": "📞 تواصل مع الإدارة",
+                                "payload": "CONTACT_INFO"
+                            }
+                        ]
+                    }
+                ]
+            },
+            timeout=10
+        )
+        print("[OK] Messenger profile set!")
+    except Exception as e:
+        print(f"[ERROR] set_get_started: {e}")
 
 @app.route("/webhook", methods=["GET"])
 def webhook_verify():
@@ -121,34 +201,62 @@ def webhook_receive():
     data = request.get_json(silent=True)
     if not data or data.get("object") != "page":
         return "OK", 200
+
     for entry in data.get("entry", []):
         for event in entry.get("messaging", []):
             sender_id = event["sender"]["id"]
+
             if "message" in event:
                 msg = event["message"]
                 if msg.get("is_echo"):
                     continue
+
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
+
                 print(f"[IN] {sender_id}: {text}")
                 send_typing(sender_id)
                 reply = get_ai_response(sender_id, text)
                 send_message(sender_id, reply)
                 print(f"[OUT] {reply[:80]}")
+
             elif "postback" in event:
-                payload = event["postback"].get("payload", "مرحبا")
-                send_typing(sender_id)
-                send_message(sender_id, get_ai_response(sender_id, payload))
+                payload = event["postback"].get("payload", "")
+
+                if payload == "GET_STARTED":
+                    send_message(sender_id, WELCOME_MESSAGE)
+                elif payload == "REGISTRATION_INFO":
+                    send_typing(sender_id)
+                    send_message(sender_id, get_ai_response(sender_id, "أخبرني عن التسجيل والقبول في المدرسة"))
+                elif payload == "FEES_INFO":
+                    send_typing(sender_id)
+                    send_message(sender_id, get_ai_response(sender_id, "ما هي الرسوم الدراسية لجميع المراحل؟"))
+                elif payload == "CURRICULUM_INFO":
+                    send_typing(sender_id)
+                    send_message(sender_id, get_ai_response(sender_id, "ما هي المناهج والبرامج التعليمية؟"))
+                elif payload == "CONTACT_INFO":
+                    send_message(sender_id, "📞 للتواصل مع إدارة المدرسة البريطانية الدولية:\n\n• واتساب: 00970593115112\n• البريد الإلكتروني: financial@bis.edu.ps\n\nنرحب بتواصلكم في أي وقت! 😊")
+                else:
+                    send_typing(sender_id)
+                    send_message(sender_id, get_ai_response(sender_id, payload))
+
     return "OK", 200
+
+@app.route("/setup", methods=["GET"])
+def setup():
+    """Run this once to configure Messenger profile"""
+    set_get_started()
+    return jsonify({"status": "Messenger profile configured!", "menu": "set"})
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "status": "BIS School Bot is running",
-        "school_data": "loaded" if SCHOOL_DATA else "MISSING",
-        "ai": "OpenRouter / Gemini 2.0 Flash",
-        "messenger": "ok" if PAGE_ACCESS_TOKEN else "not set yet"
+        "status": "✅ BIS School Bot is running",
+        "school_data": "loaded ✅" if SCHOOL_DATA else "MISSING ❌",
+        "ai_model": "Google Gemini 2.0 Flash via OpenRouter",
+        "messenger": "configured ✅" if PAGE_ACCESS_TOKEN else "not set ❌",
+        "tip": "Visit /setup once to configure Messenger welcome message and menu"
     })
 
 if __name__ == "__main__":

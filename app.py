@@ -263,6 +263,18 @@ def home():
         "tip": "Visit /setup once to configure Messenger welcome message and menu"
     })
 
+import threading, time
+
+def keep_alive():
+    while True:
+        time.sleep(600)
+        try:
+            requests.get("https://bis-ai-bot.onrender.com/", timeout=5)
+        except:
+            pass
+
+threading.Thread(target=keep_alive, daemon=True).start()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
